@@ -9,13 +9,14 @@ from threading import Thread
 from pynput import mouse, keyboard
 from PIL import ImageGrab
 import platform
+from pathlib import Path
 
 class StepSnapRecorder:
     def __init__(self, root):
         self.root = root
-        self.root.title("StepSnap Recorder - Dark Mode")
-        self.root.geometry("350x280")
-        self.root.attributes("-topmost", True)  # Keep window on top
+        self.root.title("StepSnap Recorder - v1.1")
+        self.root.geometry("350x320")
+        self.root.attributes("-topmost", True)
         
         # Color Palette (Dark Mode)
         self.colors = {
@@ -28,6 +29,10 @@ class StepSnapRecorder:
         
         self.root.configure(bg=self.colors['bg'])
         
+        # Determine the base directory for savings
+        # Fallback to User's Documents if current directory is restricted
+        self.base_output_dir = self.get_safe_output_dir()
+        
         # State variables
         self.is_recording = False
         self.steps = []
@@ -38,26 +43,44 @@ class StepSnapRecorder:
         
         self.setup_ui()
 
+    def get_safe_output_dir(self):
+        """Finds a writable directory for recordings, prioritizing Documents."""
+        try:
+            # Try Documents folder first (standard for Windows user data)
+            doc_path = Path.home() / "Documents" / "StepSnap_Recordings"
+            doc_path.mkdir(parents=True, exist_ok=True)
+            # Test write access
+            test_file = doc_path / ".write_test"
+            test_file.touch()
+            test_file.unlink()
+            return str(doc_path)
+        except:
+            # Fallback to local script directory (current behavior)
+            return os.getcwd()
+
     def setup_ui(self):
         """Creates a sleek Dark Mode GUI."""
         style = ttk.Style()
         style.theme_use('default')
         
-        # Configure Styles
         style.configure("TFrame", background=self.colors['bg'])
         style.configure("TLabel", background=self.colors['bg'], foreground=self.colors['fg'], font=("Segoe UI", 10))
         style.configure("Header.TLabel", background=self.colors['bg'], foreground=self.colors['fg'], font=("Segoe UI", 14, "bold"))
-        style.configure("Action.TButton", font=("Segoe UI", 10, "bold"))
         
         self.main_frame = ttk.Frame(self.root, padding="20")
         self.main_frame.pack(fill=tk.BOTH, expand=True)
 
-        self.status_label = ttk.Label(
-            self.main_frame, text="READY", style="Header.TLabel"
-        )
-        self.status_label.pack(pady=(0, 10))
+        self.status_label = ttk.Label(self.main_frame, text="READY", style="Header.TLabel")
+        self.status_label.pack(pady=(0, 5))
 
-        # Visual indicator for recording
+        self.path_label = ttk.Label(
+            self.main_frame, 
+            text=f"Saving to: .../{os.path.basename(self.base_output_dir)}", 
+            font=("Segoe UI", 7),
+            foreground=self.colors['text_secondary']
+        )
+        self.path_label.pack(pady=(0, 10))
+
         self.indicator = tk.Canvas(self.main_frame, width=20, height=20, bg=self.colors['bg'], highlightthickness=0)
         self.indicator_circle = self.indicator.create_oval(2, 2, 18, 18, fill="gray")
         self.indicator.pack(pady=5)
@@ -77,7 +100,7 @@ class StepSnapRecorder:
 
         self.help_label = ttk.Label(
             self.main_frame, 
-            text="[Ctrl+Alt+S] to Stop Early\nScreenshots + CSV + JSON + Wiki", 
+            text="Hotkey: [Ctrl+Alt+S] to Stop\nCaptures screenshots + Wiki + Data", 
             font=("Segoe UI", 8),
             justify="center",
             foreground=self.colors['text_secondary']
@@ -86,7 +109,10 @@ class StepSnapRecorder:
 
     def toggle_recording(self):
         if not self.is_recording:
-            self.start_recording()
+            try:
+                self.start_recording()
+            except PermissionError as e:
+                messagebox.showerror("Permission Error", f"Cannot write to folder. Please try running the script from your Documents folder or as Administrator.\n\nDetails: {e}")
         else:
             self.stop_recording()
 
@@ -96,16 +122,16 @@ class StepSnapRecorder:
         self.start_time = time.time()
         
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        self.session_folder = f"recording_{timestamp}"
+        self.session_folder = os.path.join(self.base_output_dir, f"recording_{timestamp}")
+        
+        # Explicitly create folders
         os.makedirs(self.session_folder, exist_ok=True)
         os.makedirs(os.path.join(self.session_folder, "screenshots"), exist_ok=True)
 
-        # UI Update
         self.status_label.config(text="RECORDING", foreground=self.colors['recording'])
         self.indicator.itemconfig(self.indicator_circle, fill=self.colors['recording'])
         self.btn_toggle.config(text="STOP", bg=self.colors['recording'])
         
-        # Listeners
         self.mouse_listener = mouse.Listener(on_click=self.on_click)
         self.mouse_listener.start()
         
@@ -122,13 +148,13 @@ class StepSnapRecorder:
             ss_name = f"step_{len(self.steps) + 1}.png"
             ss_path = os.path.join(self.session_folder, "screenshots", ss_name)
             
-            # Capture logic with safety for dual monitors
             try:
                 bbox = (x - 150, y - 150, x + 150, y + 150)
                 screenshot = ImageGrab.grab(bbox=bbox)
                 screenshot.save(ss_path)
-            except:
-                ss_name = "ERROR_CAPTURING"
+            except Exception as e:
+                print(f"Screenshot skipped: {e}")
+                ss_name = "MISSING_SCREENSHOT"
 
             step_data = {
                 "step": len(self.steps) + 1,
@@ -149,13 +175,15 @@ class StepSnapRecorder:
         if self.mouse_listener: self.mouse_listener.stop()
         if self.hotkey_listener: self.hotkey_listener.stop()
 
-        self.save_data()
+        if self.steps:
+            self.save_data()
+            messagebox.showinfo("Saved", f"Files generated in:\n{self.session_folder}")
+        else:
+            messagebox.showwarning("Empty Session", "No clicks were recorded.")
         
         self.status_label.config(text="READY", foreground=self.colors['fg'])
         self.indicator.itemconfig(self.indicator_circle, fill="gray")
         self.btn_toggle.config(text="START RECORDING", bg=self.colors['accent'])
-        
-        messagebox.showinfo("Saved", f"Files generated in:\n{self.session_folder}")
 
     def save_data(self):
         # JSON
@@ -163,11 +191,10 @@ class StepSnapRecorder:
             json.dump(self.steps, f, indent=4)
 
         # CSV
-        if self.steps:
-            with open(os.path.join(self.session_folder, "data.csv"), 'w', newline='') as f:
-                writer = csv.DictWriter(f, fieldnames=self.steps[0].keys())
-                writer.writeheader()
-                writer.writerows(self.steps)
+        with open(os.path.join(self.session_folder, "data.csv"), 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=self.steps[0].keys())
+            writer.writeheader()
+            writer.writerows(self.steps)
 
         # Wiki / Training Text
         with open(os.path.join(self.session_folder, "training_guide.txt"), 'w') as f:
